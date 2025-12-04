@@ -1,106 +1,126 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-// Import thư viện ERC721A để tối ưu gas khi mint số lượng lớn
-// Đảm bảo bạn đã chạy: npm install erc721a @openzeppelin/contracts
 import "erc721a/contracts/ERC721A.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 contract ShineTicket is ERC721A, Ownable {
     // --- KHAI BÁO BIẾN TRẠNG THÁI ---
-
-    // Mapping lưu trạng thái Check-in của từng vé (TokenID => Đã dùng chưa?)
     mapping(uint256 => bool) public ticketUsed;
-
-    // Base URI cho Metadata (Link folder chứa file JSON trên IPFS hoặc API Backend)
     string private _baseTokenURI;
 
-    // --- SỰ KIỆN (EVENTS) ---
-    // Event bắn ra khi vé được check-in thành công
-    event TicketUsed(uint256 indexed tokenId, address checkInBy, uint256 timestamp);
-    // Event bắn ra khi mint lẻ hoặc mint số lượng lớn cho 1 người (Admin mint thủ công)
-    event BatchMinted(address indexed to, uint256 quantity, uint256 startTokenId);
-
+    // --- SỰ KIỆN ---
+    // Sửa lại event để hỗ trợ batch (tiết kiệm gas log)
+    event TicketsCheckedIn(uint256[] tokenIds, uint256 timestamp);
+    
     // --- KHỞI TẠO ---
     constructor(address initialOwner) 
         ERC721A("ShineTicket", "SHINE") 
         Ownable(initialOwner) 
     {}
 
-    // --- TÍNH NĂNG 1: MINT BATCH (GOM ĐƠN NHIỀU NGƯỜI) ---
-    
-    /**
-     * @dev CORE FEATURE: Hàm này dùng cho Worker gom đơn hàng từ Queue.
-     * Ví dụ: 
-     * - User A mua 1 vé
-     * - User B mua 2 vé
-     * => recipients = [AddrA, AddrB], quantities = [1, 2]
-     * => Kết quả: A nhận ID 1, B nhận ID 2 và 3.
-     */
+    // --- TÍNH NĂNG 1: MINT BATCH (WORKER GỌI) ---
     function mintBatchUsers(address[] calldata recipients, uint256[] calldata quantities) external onlyOwner {
-        // Kiểm tra dữ liệu đầu vào có khớp nhau không
         require(recipients.length == quantities.length, "Data mismatch");
-
-        // Vòng lặp mint cho từng người
-        // ERC721A tối ưu gas nên việc gọi _safeMint trong vòng lặp vẫn rẻ hơn ERC721 thường
         for (uint256 i = 0; i < recipients.length; i++) {
             _safeMint(recipients[i], quantities[i]);
         }
     }
 
-    // --- TÍNH NĂNG 2: MINT THỦ CÔNG / SPONSOR (BACKUP) ---
+    // --- TÍNH NĂNG 2: MINT THỦ CÔNG (ADMIN GỌI) ---
+    function mintTicket(address to, uint256 quantity) external onlyOwner {
+        _safeMint(to, quantity);
+    }
+
+    // --- TÍNH NĂNG 3: BATCH CHECK-IN (QUAN TRỌNG) ---
     
     /**
-     * @dev BACKUP FEATURE: Dùng khi Admin muốn tặng vé mời hoặc xử lý sự cố.
-     * Mint số lượng lớn vào TRỰC TIẾP 1 ví duy nhất.
+     * @dev NÂNG CẤP: Cho phép Worker đồng bộ trạng thái nhiều vé cùng lúc.
+     * Ví dụ: Worker gom 50 vé đã soát ở cổng, gọi hàm này 1 lần duy nhất.
      */
-    function mintTicket(address to, uint256 quantity) external onlyOwner {
-        uint256 startId = _nextTokenId();
-        _safeMint(to, quantity);
-        
-        emit BatchMinted(to, quantity, startId);
+    function batchCheckIn(uint256[] calldata tokenIds) external onlyOwner {
+        for (uint256 i = 0; i < tokenIds.length; i++) {
+            uint256 tokenId = tokenIds[i];
+            
+            // Chỉ xử lý nếu vé tồn tại và chưa dùng 
+            if (_exists(tokenId) && !ticketUsed[tokenId]) {
+                ticketUsed[tokenId] = true;
+            }
+        }
+        // Emit 1 event cho cả mảng để tiết kiệm gas
+        emit TicketsCheckedIn(tokenIds, block.timestamp);
     }
 
-    // --- TÍNH NĂNG 3: CHECK-IN (SOÁT VÉ) ---
-
     /**
-     * @dev Hàm check-in vé. Chỉ Admin/Worker mới gọi được.
-     * Logic: Quét QR -> Worker gọi hàm này -> Đổi trạng thái vé trên Blockchain.
+     * @dev Hàm cũ (giữ lại nếu muốn test lẻ, nhưng thực tế sẽ ít dùng)
      */
     function checkIn(uint256 tokenId) external onlyOwner {
-        // 1. Kiểm tra vé có tồn tại không
         require(_exists(tokenId), "Ticket does not exist");
-        
-        // 2. Kiểm tra vé đã dùng chưa
         require(!ticketUsed[tokenId], "Ticket already used");
-
-        // 3. Đánh dấu đã dùng
         ticketUsed[tokenId] = true;
-
-        emit TicketUsed(tokenId, msg.sender, block.timestamp);
+        
+        // Tạo mảng tạm để emit event cho thống nhất
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = tokenId;
+        emit TicketsCheckedIn(ids, block.timestamp);
     }
+
+    // --- TÍNH NĂNG 4: CHẶN CHUYỂN VÉ ĐÃ DÙNG (BẢO MẬT) ---
 
     /**
-     * @dev Hàm kiểm tra trạng thái vé (cho App/Frontend gọi view để hiển thị màu vé)
+     * @dev Hook của ERC721A chạy trước khi chuyển token.
+     * Chặn không cho chuyển vé (Transfer) nếu vé đó đã Check-in.
      */
-    function isTicketUsed(uint256 tokenId) external view returns (bool) {
-        require(_exists(tokenId), "Ticket does not exist");
-        return ticketUsed[tokenId];
+    function _beforeTokenTransfers(
+        address from,
+        address to,
+        uint256 startTokenId,
+        uint256 quantity
+    ) internal virtual override {
+        // Cho phép mint (from == 0) và burn (to == 0)
+        if (from != address(0) && to != address(0)) {
+            // Kiểm tra từng token trong batch chuyển đi
+            for (uint256 i = 0; i < quantity; i++) {
+                require(!ticketUsed[startTokenId + i], "Used ticket cannot be transferred");
+            }
+        }
+        super._beforeTokenTransfers(from, to, startTokenId, quantity);
+    }
+    // --- TÍNH NĂNG 5: QUẢN LÝ VÒNG ĐỜI (ADMIN ONLY) ---
+
+    /**
+     * @dev Chỉ Admin mới có quyền hủy vé (Ví dụ: Vé bị hack, hoặc hoàn tiền hủy show).
+     * User không tự burn được.
+     */
+    function revokeTicket(uint256 tokenId) external onlyOwner {
+        _burn(tokenId); 
+        // Hàm _burn có sẵn trong ERC721A nhưng là internal
+        // Ta bọc nó lại để chỉ Admin gọi được.
     }
 
-    // --- CẤU HÌNH HỆ THỐNG ---
+    // --- HELPER & CONFIG ---
+
+    // Hàm View cho Frontend check 1 lúc nhiều vé
+    function getBatchTicketStatus(uint256[] calldata tokenIds) external view returns (bool[] memory) {
+        bool[] memory statuses = new bool[](tokenIds.length);
+        for (uint256 i = 0; i < tokenIds.length; i++) {
+            if (!_exists(tokenIds[i])) {
+                statuses[i] = false; // Coi như chưa dùng (hoặc không tồn tại)
+            } else {
+                statuses[i] = ticketUsed[tokenIds[i]];
+            }
+        }
+        return statuses;
+    }
 
     function _baseURI() internal view virtual override returns (string memory) {
         return _baseTokenURI;
     }
 
-    // Worker sẽ gọi hàm này để cập nhật link API Metadata
-    // Ví dụ: setBaseURI("https://api.shineticket.com/metadata/")
     function setBaseURI(string calldata baseURI) external onlyOwner {
         _baseTokenURI = baseURI;
     }
     
-    // Config: Vé bắt đầu từ số 1 (thay vì số 0) để đẹp đội hình
     function _startTokenId() internal view virtual override returns (uint256) {
         return 1;
     }

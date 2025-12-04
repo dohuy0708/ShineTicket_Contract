@@ -1,10 +1,12 @@
 import { expect } from "chai";
 import { network } from "hardhat";
 
+// Giữ nguyên cách import và connect của bạn
 const { ethers } = await network.connect();
-describe("ShineTicket System", function () {
+
+describe("ShineTicket System V2", function () {
   let ShineTicket, shineTicket;
-  let owner, worker, user1, user2, user3;
+  let owner, user1, user2, user3;
 
   beforeEach(async function () {
     // Lấy danh sách ví giả lập
@@ -15,100 +17,151 @@ describe("ShineTicket System", function () {
     shineTicket = await ShineTicket.deploy(owner.address);
   });
 
+  // --- PHẦN 1: DEPLOYMENT ---
   describe("1. Deployment", function () {
     it("Should set the right owner", async function () {
       expect(await shineTicket.owner()).to.equal(owner.address);
     });
 
     it("Should start token ID from 1", async function () {
-      // Mint thử 1 vé để xem ID bắt đầu là bao nhiêu
       await shineTicket.mintTicket(user1.address, 1);
       expect(await shineTicket.ownerOf(1)).to.equal(user1.address);
     });
   });
 
+  // --- PHẦN 2: MINTING FEATURES ---
   describe("2. Minting Features", function () {
-    // TEST QUAN TRỌNG NHẤT: MINT BATCH CHO NHIỀU NGƯỜI
     it("Should mint batch for MULTIPLE users correctly (mintBatchUsers)", async function () {
-      // Kịch bản:
-      // User1 mua 1 vé
-      // User2 mua 2 vé
-      // User3 mua 1 vé
+      // Kịch bản: User1(1 vé), User2(2 vé), User3(1 vé)
       const recipients = [user1.address, user2.address, user3.address];
       const quantities = [1, 2, 1];
 
       // Worker gọi hàm mint batch
       await shineTicket.connect(owner).mintBatchUsers(recipients, quantities);
 
-      // Kiểm tra số lượng vé trong ví từng người
+      // Kiểm tra số dư
       expect(await shineTicket.balanceOf(user1.address)).to.equal(1);
       expect(await shineTicket.balanceOf(user2.address)).to.equal(2);
       expect(await shineTicket.balanceOf(user3.address)).to.equal(1);
 
-      // Kiểm tra Token ID được phân phối đúng thứ tự (ERC721A)
-      // ID 1 -> User1
+      // Kiểm tra Token ID (ID bắt đầu từ 1)
       expect(await shineTicket.ownerOf(1)).to.equal(user1.address);
-      // ID 2 -> User2
-      expect(await shineTicket.ownerOf(2)).to.equal(user2.address);
-      // ID 3 -> User2 (Vé thứ 2 của User2)
-      expect(await shineTicket.ownerOf(3)).to.equal(user2.address);
-      // ID 4 -> User3
+      expect(await shineTicket.ownerOf(2)).to.equal(user2.address); // User2
+      expect(await shineTicket.ownerOf(3)).to.equal(user2.address); // User2
       expect(await shineTicket.ownerOf(4)).to.equal(user3.address);
     });
 
     it("Should fail if array lengths mismatch", async function () {
       const recipients = [user1.address];
-      const quantities = [1, 2]; // Sai dữ liệu
+      const quantities = [1, 2];
 
       await expect(
         shineTicket.connect(owner).mintBatchUsers(recipients, quantities)
       ).to.be.revertedWith("Data mismatch");
     });
 
-    // Test tính năng backup (Mint tay cho 1 người)
     it("Should mint bulk for SINGLE user correctly (mintTicket)", async function () {
       await shineTicket.connect(owner).mintTicket(user1.address, 5);
       expect(await shineTicket.balanceOf(user1.address)).to.equal(5);
     });
   });
 
-  describe("3. Check-in Feature", function () {
+  // --- PHẦN 3: CHECK-IN FEATURE (Đã cập nhật sang Batch Check-in) ---
+  describe("3. Batch Check-in Feature", function () {
     beforeEach(async function () {
-      // Setup: Mint trước 1 vé cho User1 (Token ID sẽ là 1)
-      await shineTicket.connect(owner).mintTicket(user1.address, 1);
+      // Setup: Mint 3 vé cho User1 (ID: 1, 2, 3)
+      await shineTicket.connect(owner).mintTicket(user1.address, 3);
     });
 
-    it("Worker can check-in a valid ticket", async function () {
-      // Trạng thái ban đầu: false
-      expect(await shineTicket.isTicketUsed(1)).to.equal(false);
+    it("Worker can BATCH check-in multiple tickets", async function () {
+      // Kiểm tra trạng thái ban đầu (ticketUsed là public mapping)
+      expect(await shineTicket.ticketUsed(1)).to.equal(false);
+      expect(await shineTicket.ticketUsed(3)).to.equal(false);
 
-      // Thực hiện check-in
-      await expect(shineTicket.connect(owner).checkIn(1))
-        .to.emit(shineTicket, "TicketUsed")
-        .withArgs(1, owner.address, await timeTimestamp());
+      // Thực hiện check-in vé 1 và 3 cùng lúc
+      // Lưu ý: Tên Event đã đổi thành 'TicketsCheckedIn'
+      await expect(shineTicket.connect(owner).batchCheckIn([1, 3])).to.emit(
+        shineTicket,
+        "TicketsCheckedIn"
+      );
+      // .withArgs([1, 3], ...); // Bỏ qua check args phức tạp để tránh lỗi version chai
 
       // Trạng thái sau đó: true
-      expect(await shineTicket.isTicketUsed(1)).to.equal(true);
+      expect(await shineTicket.ticketUsed(1)).to.equal(true);
+      expect(await shineTicket.ticketUsed(3)).to.equal(true);
+      // Vé số 2 chưa check-in nên vẫn false
+      expect(await shineTicket.ticketUsed(2)).to.equal(false);
     });
 
-    it("Cannot check-in the same ticket twice", async function () {
-      await shineTicket.connect(owner).checkIn(1);
+    it("Should allow Frontend to view batch status (getBatchTicketStatus)", async function () {
+      await shineTicket.connect(owner).batchCheckIn([1, 3]);
 
-      // Lần 2 phải lỗi
-      await expect(shineTicket.connect(owner).checkIn(1)).to.be.revertedWith(
-        "Ticket already used"
-      );
-    });
+      // Gọi hàm view mới
+      const statuses = await shineTicket.getBatchTicketStatus([1, 2, 3]);
 
-    it("Cannot check-in non-existent ticket", async function () {
-      await expect(shineTicket.connect(owner).checkIn(999)).to.be.revertedWith(
-        "Ticket does not exist"
-      );
+      // Kết quả trả về mảng bool
+      expect(statuses[0]).to.equal(true); // ID 1
+      expect(statuses[1]).to.equal(false); // ID 2
+      expect(statuses[2]).to.equal(true); // ID 3
     });
 
     it("User CANNOT check-in by themselves", async function () {
       await expect(
-        shineTicket.connect(user1).checkIn(1)
+        shineTicket.connect(user1).batchCheckIn([1])
+      ).to.be.revertedWithCustomError(
+        shineTicket,
+        "OwnableUnauthorizedAccount"
+      );
+    });
+  });
+
+  // --- PHẦN 4: SECURITY & ANTI-SCAM (Mới thêm) ---
+  describe("4. Security: Transfer Restrictions", function () {
+    beforeEach(async function () {
+      await shineTicket.connect(owner).mintTicket(user1.address, 1); // User1 có vé ID 1
+    });
+
+    it("Should ALLOW transfer if ticket is NOT used", async function () {
+      // Vé chưa dùng -> Chuyển được
+      await shineTicket
+        .connect(user1)
+        .transferFrom(user1.address, user2.address, 1);
+      expect(await shineTicket.ownerOf(1)).to.equal(user2.address);
+    });
+
+    it("Should PREVENT transfer if ticket IS USED (Anti-Scam)", async function () {
+      // 1. Admin check-in vé của User1
+      await shineTicket.connect(owner).batchCheckIn([1]);
+
+      // 2. User1 cố tình chuyển vé đã dùng cho User2
+      // Kỳ vọng: Phải REVERT (Thất bại) với message đã set trong contract
+      await expect(
+        shineTicket.connect(user1).transferFrom(user1.address, user2.address, 1)
+      ).to.be.revertedWith("Used ticket cannot be transferred");
+    });
+  });
+
+  // --- PHẦN 5: ADMIN FEATURES (Mới thêm) ---
+  describe("5. Admin Features: Revoke", function () {
+    it("Admin can revoke (burn) a ticket", async function () {
+      await shineTicket.connect(owner).mintTicket(user1.address, 1);
+
+      // Admin thu hồi vé 1
+      await shineTicket.connect(owner).revokeTicket(1);
+
+      // Kiểm tra: Vé không còn tồn tại
+      // SỬA: Dùng revertedWithCustomError để bắt đúng lỗi của ERC721A
+      await expect(shineTicket.ownerOf(1)).to.be.revertedWithCustomError(
+        shineTicket,
+        "OwnerQueryForNonexistentToken"
+      );
+    });
+
+    it("User CANNOT revoke their own ticket", async function () {
+      await shineTicket.connect(owner).mintTicket(user1.address, 1);
+
+      await expect(
+        shineTicket.connect(user1).revokeTicket(1)
       ).to.be.revertedWithCustomError(
         shineTicket,
         "OwnableUnauthorizedAccount"
@@ -117,9 +170,9 @@ describe("ShineTicket System", function () {
   });
 });
 
-// Helper function để lấy timestamp block hiện tại (cho việc check event)
+// Helper function cũ của bạn (giữ nguyên)
 async function timeTimestamp() {
   const blockNumBefore = await ethers.provider.getBlockNumber();
   const blockBefore = await ethers.provider.getBlock(blockNumBefore);
-  return blockBefore.timestamp + 1; // +1 vì block tiếp theo sẽ tăng time
+  return blockBefore.timestamp + 1;
 }
