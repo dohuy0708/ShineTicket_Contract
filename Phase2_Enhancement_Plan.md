@@ -54,9 +54,14 @@ Tiến trình nâng cấp dự án từ một hợp đồng NFT (ERC721A) Ticket
 ### 4. Cơ Chế Escrow & Quyết Toán Bằng Stablecoin (USDT Settlement)
 
 - **Công nghệ:** `IERC20`, `ReentrancyGuard` (Pull over Push).
-- **Mục tiêu:** Khóa tiền khi mua vé, và chỉ quyết toán sau sự kiện để đảm bảo minh bạch, chống lừa đảo sự kiện ảo.
+- **Mục tiêu:** Khóa tiền khi mua vé (bất kể mua crypto hay mua Fiat Bank Transfer), và chỉ quyết toán sau sự kiện để đảm bảo minh bạch, chống lừa đảo sự kiện ảo.
+- **Giải quyết bài toán Tiền Pháp Định (VND/Chuyển khoản) và Các Luồng Mua Vé:**
+  - **Luồng 1: Customer tự mua bằng Crypto (USDT):** Khách hàng gọi hàm `buyTicket`. Hệ thống tự động thu USDT từ ví khách nạp vào quỹ Escrow của Contract, đồng thời Mint (xuất) vé thẳng vào ví khách hàng.
+  - **Luồng 2: Customer chuyển khoản VND (Worker/Relayer mua hộ):** Khi khách chuyển khoản VNĐ thành công qua ngân hàng, Backend/Worker đóng vai trò là Relayer. Worker/Relayer này sẽ dùng nguồn dự trữ USDT của Platform để gọi hàm "mua hộ" (vd. `buyTicketForUser`) nhằm nạp số USDT tương ứng vào Escrow, đồng thời Mint vé chỉ định thẳng vào địa chỉ ví đích của khách hàng.
+  - **Logic Chuyển Chủ (Transfer):** Cả 2 luồng trên đều cấp vé (Mint) trực tiếp vào ví của Customer. Nhờ thiết kế Hybrid Walled Garden chặn luân chuyển ngang hàng, Organizer sẽ _không cần phải chuyển vé thủ công_ cho khách (vì thao tác này đã bị cấm để chống phân phối lậu). Tất cả vé được phân phối/cấp phát trung tâm từ Contract thẳng vào tay người dùng cuối.
+  - Nhờ vậy, 100% doanh thu (dù nguồn gốc Crypto hay Fiat) đều được quy về một mối quản lý USDT chung, giúp minh bạch hóa và tự động hóa khâu quyết toán mà không cần đối soát thủ công khó khăn.
 - **Chi tiết thực hiện:**
-  - Tích hợp hàm thanh toán USDT cho mỗi sự kiện thay vì native token (ETH/POL) để tránh biến động tỷ giá. Địa chỉ hợp đồng USDT nên được khởi tạo là `immutable` để tăng độ tin cậy.
+  - Tích hợp hàm thanh toán USDT cho mỗi sự kiện thay vì native token (ETH/POL) để tránh biến động tỷ giá. Địa chỉ hợp đồng USDT nên khởi tạo là `immutable`.
   - Admin/Smart Contract neo chi phí hệ thống (gas fee, platform fee) theo USDT (`gasOffset`). Cơ chế Escrow sẽ tự động trích lại phần `commissionRate` và `gasOffset` trước khi cho phép Organizer rút phần doanh thu ròng (Net Revenue).
   - Áp dụng mô hình **Pull Payment**: Hợp đồng tính toán doanh thu sự kiện, sau đó Organizer phải chủ động gọi hàm `claimFunds()` để rút tiền.
   - Sử dụng `nonReentrant` để chống tấn công vào pool quỹ dự án.

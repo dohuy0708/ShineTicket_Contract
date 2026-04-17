@@ -6,21 +6,25 @@ const { ethers } = await network.connect();
 
 describe("ShineTicket System V2", function () {
   let ShineTicket, shineTicket;
-  let owner, user1, user2, user3;
+  let owner, user1, user2, user3, mockUSDT;
 
   beforeEach(async function () {
     // Lấy danh sách ví giả lập
-    [owner, user1, user2, user3] = await ethers.getSigners();
+    [owner, user1, user2, user3, mockUSDT] = await ethers.getSigners();
 
     // Deploy contract mới trước mỗi bài test
     ShineTicket = await ethers.getContractFactory("ShineTicket");
-    shineTicket = await ShineTicket.deploy(owner.address);
+    shineTicket = await ShineTicket.deploy(owner.address, mockUSDT.address);
   });
 
   // --- PHẦN 1: DEPLOYMENT ---
   describe("1. Deployment", function () {
-    it("Should set the right owner", async function () {
-      expect(await shineTicket.owner()).to.equal(owner.address);
+    it("Should grant DEFAULT_ADMIN_ROLE to the initial admin", async function () {
+      const DEFAULT_ADMIN_ROLE =
+        "0x0000000000000000000000000000000000000000000000000000000000000000";
+      expect(
+        await shineTicket.hasRole(DEFAULT_ADMIN_ROLE, owner.address),
+      ).to.equal(true);
     });
 
     it("Should start token ID from 1", async function () {
@@ -56,7 +60,7 @@ describe("ShineTicket System V2", function () {
       const quantities = [1, 2];
 
       await expect(
-        shineTicket.connect(owner).mintBatchUsers(recipients, quantities)
+        shineTicket.connect(owner).mintBatchUsers(recipients, quantities),
       ).to.be.revertedWith("Data mismatch");
     });
 
@@ -68,9 +72,13 @@ describe("ShineTicket System V2", function () {
 
   // --- PHẦN 3: CHECK-IN FEATURE (Đã cập nhật sang Batch Check-in) ---
   describe("3. Batch Check-in Feature", function () {
+    let OPERATOR_ROLE;
     beforeEach(async function () {
+      OPERATOR_ROLE = ethers.id("OPERATOR_ROLE");
       // Setup: Mint 3 vé cho User1 (ID: 1, 2, 3)
       await shineTicket.connect(owner).mintTicket(user1.address, 3);
+      // Cấp quyền Operator cho owner để có thể test check-in
+      await shineTicket.grantRole(OPERATOR_ROLE, owner.address);
     });
 
     it("Worker can BATCH check-in multiple tickets", async function () {
@@ -82,7 +90,7 @@ describe("ShineTicket System V2", function () {
       // Lưu ý: Tên Event đã đổi thành 'TicketsCheckedIn'
       await expect(shineTicket.connect(owner).batchCheckIn([1, 3])).to.emit(
         shineTicket,
-        "TicketsCheckedIn"
+        "TicketsCheckedIn",
       );
       // .withArgs([1, 3], ...); // Bỏ qua check args phức tạp để tránh lỗi version chai
 
@@ -106,19 +114,22 @@ describe("ShineTicket System V2", function () {
     });
 
     it("User CANNOT check-in by themselves", async function () {
-      await expect(
-        shineTicket.connect(user1).batchCheckIn([1])
-      ).to.be.revertedWithCustomError(
-        shineTicket,
-        "OwnableUnauthorizedAccount"
-      );
+      await expect(shineTicket.connect(user1).batchCheckIn([1]))
+        .to.be.revertedWithCustomError(
+          shineTicket,
+          "AccessControlUnauthorizedAccount",
+        )
+        .withArgs(user1.address, OPERATOR_ROLE);
     });
   });
 
   // --- PHẦN 4: SECURITY & ANTI-SCAM (Mới thêm) ---
   describe("4. Security: Transfer Restrictions", function () {
+    let OPERATOR_ROLE;
     beforeEach(async function () {
+      OPERATOR_ROLE = ethers.id("OPERATOR_ROLE");
       await shineTicket.connect(owner).mintTicket(user1.address, 1); // User1 có vé ID 1
+      await shineTicket.grantRole(OPERATOR_ROLE, owner.address); // Cấp quyền Operator cho owner
     });
 
     it("Should ALLOW transfer if ticket is NOT used", async function () {
@@ -136,7 +147,9 @@ describe("ShineTicket System V2", function () {
       // 2. User1 cố tình chuyển vé đã dùng cho User2
       // Kỳ vọng: Phải REVERT (Thất bại) với message đã set trong contract
       await expect(
-        shineTicket.connect(user1).transferFrom(user1.address, user2.address, 1)
+        shineTicket
+          .connect(user1)
+          .transferFrom(user1.address, user2.address, 1),
       ).to.be.revertedWith("Used ticket cannot be transferred");
     });
   });
@@ -153,19 +166,41 @@ describe("ShineTicket System V2", function () {
       // SỬA: Dùng revertedWithCustomError để bắt đúng lỗi của ERC721A
       await expect(shineTicket.ownerOf(1)).to.be.revertedWithCustomError(
         shineTicket,
-        "OwnerQueryForNonexistentToken"
+        "OwnerQueryForNonexistentToken",
       );
     });
 
     it("User CANNOT revoke their own ticket", async function () {
+      const DEFAULT_ADMIN_ROLE =
+        "0x0000000000000000000000000000000000000000000000000000000000000000";
       await shineTicket.connect(owner).mintTicket(user1.address, 1);
 
+      await expect(shineTicket.connect(user1).revokeTicket(1))
+        .to.be.revertedWithCustomError(
+          shineTicket,
+          "AccessControlUnauthorizedAccount",
+        )
+        .withArgs(user1.address, DEFAULT_ADMIN_ROLE);
+    });
+  });
+
+  // --- PHẦN 6: EMERGENCY PAUSE (Mới thêm) ---
+  describe("6. Emergency Pause (Pausable)", function () {
+    it("Admin can pause and unpause the contract", async function () {
+      await shineTicket.connect(owner).pause();
+      expect(await shineTicket.paused()).to.equal(true);
+
+      // Verify that paused state correctly blocks minting
       await expect(
-        shineTicket.connect(user1).revokeTicket(1)
-      ).to.be.revertedWithCustomError(
-        shineTicket,
-        "OwnableUnauthorizedAccount"
-      );
+        shineTicket.connect(owner).mintTicket(user1.address, 1),
+      ).to.be.revertedWithCustomError(shineTicket, "EnforcedPause");
+
+      await shineTicket.connect(owner).unpause();
+      expect(await shineTicket.paused()).to.equal(false);
+
+      // Should work after unpause
+      await shineTicket.connect(owner).mintTicket(user1.address, 1);
+      expect(await shineTicket.balanceOf(user1.address)).to.equal(1);
     });
   });
 });
