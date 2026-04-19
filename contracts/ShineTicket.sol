@@ -19,8 +19,10 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
     struct MintVoucher {
         uint256 eventId;
         uint256 quantity;
-        uint256 commissionRate;
-        uint256 gasOffset;
+        uint256 commissionRateBps;
+        uint256 mintGasPerTicket;
+        uint256 relayerGasPerTicket;
+        uint256 checkinGasPerTicket;
         uint64 expiryTime;
         uint256 nonce;
     }
@@ -35,10 +37,11 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
 
     // --- KHAI BÁO BIẾN TRẠNG THÁI ---
     bytes32 public constant VOUCHER_TYPEHASH = keccak256(
-        "MintVoucher(uint256 eventId,uint256 quantity,uint256 commissionRate,uint256 gasOffset,uint64 expiryTime,uint256 nonce)"
+        "MintVoucher(uint256 eventId,uint256 quantity,uint256 commissionRateBps,uint256 mintGasPerTicket,uint256 relayerGasPerTicket,uint256 checkinGasPerTicket,uint64 expiryTime,uint256 nonce)"
     );
 
     IERC20 public immutable usdtToken; // Hardcode token thanh toán chống thao túng
+    address public immutable adminTreasury;
     mapping(uint256 => Event) public events;
     mapping(uint256 => bool) public ticketUsed;
     mapping(uint256 => bool) public usedNonces; // Chống Replay Attack
@@ -46,8 +49,13 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
 
     // --- ESCROW & REVENUE TRACKING ---
     mapping(uint256 => uint256) public eventRevenue;          // Tổng doanh thu USDT của sự kiện
-    mapping(uint256 => uint256) public eventCommissionRate;   // Tỷ lệ % hoa hồng nền tảng (VD: 500 = 5%)
-    mapping(uint256 => uint256) public eventGasOffset;        // Phí bù gas mạng (USDT decimals)
+    mapping(uint256 => uint256) public eventCommissionRateBps; // Tỷ lệ % hoa hồng nền tảng (VD: 500 = 5%)
+    mapping(uint256 => uint256) public eventMintGasPerTicket;
+    mapping(uint256 => uint256) public eventRelayerGasPerTicket;
+    mapping(uint256 => uint256) public eventCheckinGasPerTicket;
+    mapping(uint256 => uint256) public eventMintedCount;
+    mapping(uint256 => uint256) public eventRelayerSoldCount;
+    mapping(uint256 => uint256) public eventCheckedInCount;
     mapping(uint256 => bool) public fundsClaimed;             // Đánh dấu để chống claim lần 2
 
     string private _baseTokenURI;
@@ -61,8 +69,10 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
         EIP712("ShineTicket", "1")
     {
         require(_usdtToken != address(0), "Invalid USDT address");
+        require(defaultAdmin != address(0), "Invalid admin address");
         _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
         usdtToken = IERC20(_usdtToken);
+        adminTreasury = defaultAdmin;
     }
 
     // --- TÍNH NĂNG 1: MINT BATCH (WORKER GỌI) ---
@@ -86,8 +96,10 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
                     VOUCHER_TYPEHASH,
                     voucher.eventId,
                     voucher.quantity,
-                    voucher.commissionRate,
-                    voucher.gasOffset,
+                    voucher.commissionRateBps,
+                    voucher.mintGasPerTicket,
+                    voucher.relayerGasPerTicket,
+                    voucher.checkinGasPerTicket,
                     voucher.expiryTime,
                     voucher.nonce
                 )
@@ -102,9 +114,11 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
             events[voucher.eventId].expiryTime = voucher.expiryTime;
             events[voucher.eventId].isActive = true;
             
-            // Thiết lập thông số Escrow
-            eventCommissionRate[voucher.eventId] = voucher.commissionRate;
-            eventGasOffset[voucher.eventId] = voucher.gasOffset;
+            // Thiết lập thông số quyết toán theo event
+            eventCommissionRateBps[voucher.eventId] = voucher.commissionRateBps;
+            eventMintGasPerTicket[voucher.eventId] = voucher.mintGasPerTicket;
+            eventRelayerGasPerTicket[voucher.eventId] = voucher.relayerGasPerTicket;
+            eventCheckinGasPerTicket[voucher.eventId] = voucher.checkinGasPerTicket;
         } else {
             require(events[voucher.eventId].organizer == msg.sender, "Caller is not the event organizer");
         }
@@ -117,11 +131,8 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
         for (uint256 i = 0; i < voucher.quantity; i++) {
             ticketToEvent[startTokenId + i] = voucher.eventId;
         }
-    }
 
-    // --- TÍNH NĂNG 3: MINT THỦ CÔNG (ADMIN GỌI) ---
-    function mintTicket(address to, uint256 quantity) external onlyRole(DEFAULT_ADMIN_ROLE) whenNotPaused {
-        _safeMint(to, quantity);
+        eventMintedCount[voucher.eventId] += voucher.quantity;
     }
 
     // --- TÍNH NĂNG 3: BATCH CHECK-IN (QUAN TRỌNG) ---
@@ -143,6 +154,10 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
             // Chỉ xử lý nếu vé tồn tại và chưa dùng 
             if (_exists(tokenId) && !ticketUsed[tokenId]) {
                 ticketUsed[tokenId] = true;
+
+                if (eventId != 0) {
+                    eventCheckedInCount[eventId] += 1;
+                }
             }
         }
         // Emit 1 event cho cả mảng để tiết kiệm gas
@@ -162,6 +177,10 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
         require(_exists(tokenId), "Ticket does not exist");
         require(!ticketUsed[tokenId], "Ticket already used");
         ticketUsed[tokenId] = true;
+
+        if (eventId != 0) {
+            eventCheckedInCount[eventId] += 1;
+        }
         
         // Tạo mảng tạm để emit event cho thống nhất
         uint256[] memory ids = new uint256[](1);
@@ -210,6 +229,8 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
     }
 
     // --- TÍNH NĂNG 6: MUA VÉ TRỰC TIẾP (KẾT NỐI ESCROW) ---
+
+    //set giá cho sự kiện, chỉ organizer mới được set giá cho sự kiện của mình
     function setEventPrice(uint256 eventId, uint256 price) external whenNotPaused {
         require(events[eventId].organizer == msg.sender, "Not organizer");
         events[eventId].price = price;
@@ -266,6 +287,8 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
         for (uint256 i = 0; i < quantity; i++) {
             ticketToEvent[startTokenId + i] = eventId;
         }
+
+        eventRelayerSoldCount[eventId] += quantity;
     }
 
     // --- TÍNH NĂNG 7: RÚT TIỀN (PULL OVER PUSH) ---
@@ -281,24 +304,48 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
         uint256 totalGross = eventRevenue[eventId];
         require(totalGross > 0, "No revenue to claim");
 
-        // Công thức tính toán
-        uint256 offset = eventGasOffset[eventId];
-        uint256 commRate = eventCommissionRate[eventId];
-        
-        // Tính phí nền tảng chia 10000 (Ví dụ 500 = 5%)
-        uint256 platformFee = (totalGross * commRate) / 10000;
-        uint256 totalDeduction = platformFee + offset;
+        // Công thức tính toán theo business mới
+        uint256 commission = (totalGross * eventCommissionRateBps[eventId]) / 10000;
+        uint256 opsCost =
+            (eventMintedCount[eventId] * eventMintGasPerTicket[eventId]) +
+            (eventRelayerSoldCount[eventId] * eventRelayerGasPerTicket[eventId]) +
+            (eventCheckedInCount[eventId] * eventCheckinGasPerTicket[eventId]);
+        uint256 totalDeduction = commission + opsCost;
 
         // Tránh tình trạng sự kiện ế vé, không đủ trả phí nền tảng
-        require(totalGross > totalDeduction, "Revenue is less than system fees");
+        require(totalGross >= totalDeduction, "Revenue is less than system fees");
         
         // Lợi nhuận ròng của Organizer
         uint256 netRevenue = totalGross - totalDeduction;
 
         // Thực hiện lệnh pull transfer
-        require(usdtToken.transfer(msg.sender, netRevenue), "USDT transfer failed");
+        if (netRevenue > 0) {
+            require(usdtToken.transfer(msg.sender, netRevenue), "Organizer transfer failed");
+        }
+
+        if (totalDeduction > 0) {
+            require(usdtToken.transfer(adminTreasury, totalDeduction), "Admin transfer failed");
+        }
+
+        eventRevenue[eventId] = 0;
         
         // Admin sẽ gọi hàm rút gộp quỹ Platform Fee sau từ ví Admin (mở rộng về sau)
+    }
+
+    function setEventCostConfig(
+        uint256 eventId,
+        uint256 commissionRateBps,
+        uint256 mintGasPerTicket,
+        uint256 relayerGasPerTicket,
+        uint256 checkinGasPerTicket
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) whenNotPaused {
+        require(events[eventId].organizer != address(0), "Event does not exist");
+        require(!fundsClaimed[eventId], "Funds already claimed");
+
+        eventCommissionRateBps[eventId] = commissionRateBps;
+        eventMintGasPerTicket[eventId] = mintGasPerTicket;
+        eventRelayerGasPerTicket[eventId] = relayerGasPerTicket;
+        eventCheckinGasPerTicket[eventId] = checkinGasPerTicket;
     }
 
     // --- HELPER & CONFIG ---

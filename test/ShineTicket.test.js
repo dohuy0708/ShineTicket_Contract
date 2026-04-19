@@ -39,8 +39,10 @@ describe("ShineTicket Phase 2", function () {
       MintVoucher: [
         { name: "eventId", type: "uint256" },
         { name: "quantity", type: "uint256" },
-        { name: "commissionRate", type: "uint256" },
-        { name: "gasOffset", type: "uint256" },
+        { name: "commissionRateBps", type: "uint256" },
+        { name: "mintGasPerTicket", type: "uint256" },
+        { name: "relayerGasPerTicket", type: "uint256" },
+        { name: "checkinGasPerTicket", type: "uint256" },
         { name: "expiryTime", type: "uint64" },
         { name: "nonce", type: "uint256" },
       ],
@@ -58,8 +60,10 @@ describe("ShineTicket Phase 2", function () {
     const voucher = {
       eventId,
       quantity,
-      commissionRate: 300,
-      gasOffset: ethers.parseUnits("1", 18),
+      commissionRateBps: 300,
+      mintGasPerTicket: ethers.parseUnits("0.01", 18),
+      relayerGasPerTicket: ethers.parseUnits("0.02", 18),
+      checkinGasPerTicket: ethers.parseUnits("0.01", 18),
       expiryTime: expiry,
       nonce: eventId * 1000,
     };
@@ -114,8 +118,10 @@ describe("ShineTicket Phase 2", function () {
       const voucher = {
         eventId: 1,
         quantity: 3,
-        commissionRate: 250,
-        gasOffset: ethers.parseUnits("1", 18),
+        commissionRateBps: 250,
+        mintGasPerTicket: ethers.parseUnits("0.01", 18),
+        relayerGasPerTicket: ethers.parseUnits("0.02", 18),
+        checkinGasPerTicket: ethers.parseUnits("0.01", 18),
         expiryTime: expiry,
         nonce: 1,
       };
@@ -135,8 +141,10 @@ describe("ShineTicket Phase 2", function () {
       const voucher = {
         eventId: 1,
         quantity: 1,
-        commissionRate: 300,
-        gasOffset: ethers.parseUnits("1", 18),
+        commissionRateBps: 300,
+        mintGasPerTicket: ethers.parseUnits("0.01", 18),
+        relayerGasPerTicket: ethers.parseUnits("0.02", 18),
+        checkinGasPerTicket: ethers.parseUnits("0.01", 18),
         expiryTime: expiry,
         nonce: 99,
       };
