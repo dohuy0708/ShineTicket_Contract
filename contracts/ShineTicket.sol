@@ -42,6 +42,7 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
     mapping(uint256 => Event) public events;
     mapping(uint256 => bool) public ticketUsed;
     mapping(uint256 => bool) public usedNonces; // Chống Replay Attack
+    mapping(uint256 => uint256) public ticketToEvent; // Ánh xạ vé -> thuộc về Sự kiện nào
 
     // --- ESCROW & REVENUE TRACKING ---
     mapping(uint256 => uint256) public eventRevenue;          // Tổng doanh thu USDT của sự kiện
@@ -109,7 +110,13 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
         }
 
         // 4. Mint vé cho Organizer theo định lượng voucher chỉ định
+        uint256 startTokenId = _nextTokenId();
         _safeMint(msg.sender, voucher.quantity);
+
+        // Map vé vào đúng Event để quản lý Check-in Expiry
+        for (uint256 i = 0; i < voucher.quantity; i++) {
+            ticketToEvent[startTokenId + i] = voucher.eventId;
+        }
     }
 
     // --- TÍNH NĂNG 3: MINT THỦ CÔNG (ADMIN GỌI) ---
@@ -126,6 +133,12 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
     function batchCheckIn(uint256[] calldata tokenIds) external onlyRole(OPERATOR_ROLE) whenNotPaused {
         for (uint256 i = 0; i < tokenIds.length; i++) {
             uint256 tokenId = tokenIds[i];
+
+            // Ràng buộc thời gian Date Expiry (Module Check-in V2)
+            uint256 eventId = ticketToEvent[tokenId];
+            if (eventId != 0) {
+                require(block.timestamp <= events[eventId].expiryTime, "Event ticket expired");
+            }
             
             // Chỉ xử lý nếu vé tồn tại và chưa dùng 
             if (_exists(tokenId) && !ticketUsed[tokenId]) {
@@ -140,6 +153,12 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
      * @dev Hàm cũ (giữ lại nếu muốn test lẻ, nhưng thực tế sẽ ít dùng)
      */
     function checkIn(uint256 tokenId) external onlyRole(OPERATOR_ROLE) whenNotPaused {
+        // Ràng buộc Date Expiry (Module Check-in V2)
+        uint256 eventId = ticketToEvent[tokenId];
+        if (eventId != 0) {
+            require(block.timestamp <= events[eventId].expiryTime, "Event ticket expired");
+        }
+
         require(_exists(tokenId), "Ticket does not exist");
         require(!ticketUsed[tokenId], "Ticket already used");
         ticketUsed[tokenId] = true;
@@ -214,7 +233,13 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
         eventRevenue[eventId] += totalPrice;
 
         // Cấp phát số lượng vé trực tiếp cho Customer (msg.sender)
+        uint256 startTokenId = _nextTokenId();
         _safeMint(msg.sender, quantity);
+
+        // Đánh dấu vé thuộc về sự kiện để quản lý hạn check-in
+        for (uint256 i = 0; i < quantity; i++) {
+            ticketToEvent[startTokenId + i] = eventId;
+        }
     }
 
     /**
@@ -235,7 +260,12 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
         eventRevenue[eventId] += totalPrice;
 
         // Mint vé phân bổ thẳng về tay khách (buyerAddress)
+        uint256 startTokenId = _nextTokenId();
         _safeMint(buyerAddress, quantity);
+
+        for (uint256 i = 0; i < quantity; i++) {
+            ticketToEvent[startTokenId + i] = eventId;
+        }
     }
 
     // --- TÍNH NĂNG 7: RÚT TIỀN (PULL OVER PUSH) ---
@@ -305,6 +335,16 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
 
     function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _unpause();
+    }
+
+    // --- BỔ SUNG CHANGELOG: Module Check-in V2 ---
+    /**
+     * @dev Gia hạn thời gian check-in của 1 Sự kiện nếu có sự cố hoặc Delay tổ chức.
+     * Chỉ Admin hệ thống mới có quyền ghi đè thời gian này.
+     */
+    function extendEventExpiry(uint256 eventId, uint64 newExpiry) external onlyRole(DEFAULT_ADMIN_ROLE) whenNotPaused {
+        require(events[eventId].organizer != address(0), "Event does not exist");
+        events[eventId].expiryTime = newExpiry;
     }
 
     // --- BẮT BUỘC OVERRIDE CHO ACCESSCONTROL VÀ ERC721A ---

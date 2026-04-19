@@ -8,6 +8,12 @@ export default defineConfig({
     profiles: {
       default: {
         version: "0.8.28",
+        settings: {
+          optimizer: {
+            enabled: true,
+            runs: 200,
+          },
+        },
       },
       production: {
         version: "0.8.28",
@@ -21,9 +27,11 @@ export default defineConfig({
     },
   },
   networks: {
+    hardhat: { type: "edr-simulated", allowUnlimitedContractSize: true },
     hardhatMainnet: {
       type: "edr-simulated",
       chainType: "l1",
+      allowUnlimitedContractSize: true,
     },
     hardhatOp: {
       type: "edr-simulated",

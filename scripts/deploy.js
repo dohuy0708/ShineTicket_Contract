@@ -2,7 +2,7 @@ import { network } from "hardhat";
 const { ethers, networkName } = await network.connect();
 
 async function main() {
-  console.log(`\n🚀 Starting deployment to network: ${networkName}...`);
+  console.log(`\nStarting deployment to network: ${networkName}...`);
 
   // 2. Lấy thông tin người deploy
   const [deployer] = await ethers.getSigners();
@@ -12,15 +12,35 @@ async function main() {
   const balance = await ethers.provider.getBalance(deployer.address);
   console.log("Account balance:", ethers.formatEther(balance), "POL/MATIC");
 
-  if (balance === 0n && network.name !== "hardhat") {
-    console.error("❌ Error: Ví không có tiền. Vui lòng nạp faucet!");
+  if (
+    balance === 0n &&
+    networkName !== "hardhat" &&
+    networkName !== "hardhatMainnet"
+  ) {
+    console.error("Error: deployer has no native token for gas.");
     return;
   }
 
-  // 4. Deploy Contract
+  // 3. Resolve USDT address
+  let usdtAddress = process.env.USDT_TOKEN_ADDRESS;
+  if (
+    !usdtAddress &&
+    (networkName === "hardhat" || networkName === "hardhatMainnet")
+  ) {
+    const MockUSDT = await ethers.getContractFactory("MockUSDT");
+    const mockUSDT = await MockUSDT.deploy();
+    await mockUSDT.waitForDeployment();
+    usdtAddress = await mockUSDT.getAddress();
+    console.log("MockUSDT deployed:", usdtAddress);
+  }
+
+  if (!usdtAddress) {
+    throw new Error("USDT_TOKEN_ADDRESS is required for non-local deployments");
+  }
+
+  // 4. Deploy ShineTicket
   const ShineTicket = await ethers.getContractFactory("ShineTicket");
-  // Nếu constructor có tham số, truyền vào đây. Ví dụ: .deploy(deployer.address)
-  const shineTicket = await ShineTicket.deploy(deployer.address);
+  const shineTicket = await ShineTicket.deploy(deployer.address, usdtAddress);
 
   console.log("⏳ Waiting for deployment confirmation...");
 
@@ -29,25 +49,42 @@ async function main() {
 
   const address = await shineTicket.getAddress();
 
-  console.log("\n----------------------------------------------------");
-  console.log("✅ SUCCESS! ShineTicket deployed to:", address);
-  console.log("----------------------------------------------------");
+  console.log("----------------------------------------");
+  console.log("ShineTicket deployed to:", address);
+  console.log("USDT token address:", usdtAddress);
+  console.log("----------------------------------------");
 
-  // 5. Verify code (Chỉ chạy khi không phải mạng local)
-  if (network.name !== "hardhat" && network.name !== "localhost") {
-    console.log("⏳ Waiting 15s for block propagation...");
-    await new Promise((resolve) => setTimeout(resolve, 15000));
+  // 5. Grant default roles
+  const OPERATOR_ROLE = ethers.id("OPERATOR_ROLE");
+  const ORGANIZER_ROLE = ethers.id("ORGANIZER_ROLE");
+  const MARKETPLACE_ROLE = ethers.id("MARKETPLACE_ROLE");
 
-    try {
-      console.log("Verifying contract...");
-      await run("verify:verify", {
-        address: address,
-        constructorArguments: [deployer.address],
-      });
-      console.log("✅ Contract verified successfully!");
-    } catch (error) {
-      console.log("⚠️ Verification failed:", error.message);
-    }
+  const operatorAddress = process.env.OPERATOR_ADDRESS || deployer.address;
+  const organizerAddress = process.env.ORGANIZER_ADDRESS || deployer.address;
+  const marketplaceAddress =
+    process.env.MARKETPLACE_ADDRESS || deployer.address;
+
+  await (await shineTicket.grantRole(OPERATOR_ROLE, operatorAddress)).wait();
+  await (await shineTicket.grantRole(ORGANIZER_ROLE, organizerAddress)).wait();
+  await (
+    await shineTicket.grantRole(MARKETPLACE_ROLE, marketplaceAddress)
+  ).wait();
+
+  console.log("Default roles granted:");
+  console.log("OPERATOR_ROLE:", operatorAddress);
+  console.log("ORGANIZER_ROLE:", organizerAddress);
+  console.log("MARKETPLACE_ROLE:", marketplaceAddress);
+
+  // 6. Verify code (Chỉ chạy khi không phải mạng local)
+  if (
+    networkName !== "hardhat" &&
+    networkName !== "localhost" &&
+    networkName !== "hardhatMainnet"
+  ) {
+    console.log(
+      "Verification step skipped in script. Run verify manually with constructor args:",
+    );
+    console.log(`[\"${deployer.address}\", \"${usdtAddress}\"]`);
   }
 }
 
