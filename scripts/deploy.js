@@ -23,19 +23,13 @@ async function main() {
 
   // 3. Resolve USDT address
   let usdtAddress = process.env.USDT_TOKEN_ADDRESS;
-  if (
-    !usdtAddress &&
-    (networkName === "hardhat" || networkName === "hardhatMainnet")
-  ) {
+  if (!usdtAddress) {
+    console.log("No USDT_TOKEN_ADDRESS provided. Deploying MockUSDT...");
     const MockUSDT = await ethers.getContractFactory("MockUSDT");
     const mockUSDT = await MockUSDT.deploy();
     await mockUSDT.waitForDeployment();
     usdtAddress = await mockUSDT.getAddress();
-    console.log("MockUSDT deployed:", usdtAddress);
-  }
-
-  if (!usdtAddress) {
-    throw new Error("USDT_TOKEN_ADDRESS is required for non-local deployments");
+    console.log("MockUSDT deployed to:", usdtAddress);
   }
 
   // 4. Deploy ShineTicket
