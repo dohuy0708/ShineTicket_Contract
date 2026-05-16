@@ -82,7 +82,9 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
     }
 
     // --- TÍNH NĂNG 2: MINT SỰ KIỆN TỪ VOUCHER CỦA ADMIN (EIP-712) ---
-    function mintEventTickets(MintVoucher calldata voucher, bytes calldata signature) external whenNotPaused {
+
+    // Hàm nội bộ xử lý logic mint và xác thực cho 1 voucher
+    function _mintEventTicketsInternal(MintVoucher calldata voucher, bytes calldata signature) internal {
         // 1. Chống MINT LẠI (Replay Attack)
         require(!usedNonces[voucher.nonce], "Voucher has already been used");
         usedNonces[voucher.nonce] = true;
@@ -129,6 +131,22 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
         }
 
         eventMintedCount[voucher.eventId] += voucher.quantity;
+    }
+
+    // Hàm đúc đơn lẻ giữ lại để tương thích ngược
+    function mintEventTickets(MintVoucher calldata voucher, bytes calldata signature) external whenNotPaused {
+        _mintEventTicketsInternal(voucher, signature);
+    }
+
+    // Hàm đúc lô nhiều voucher cùng lúc
+    function batchMintEventTickets(MintVoucher[] calldata vouchers, bytes[] calldata signatures) external whenNotPaused {
+        require(vouchers.length > 0, "Empty arrays");
+        require(vouchers.length == signatures.length, "Data mismatch");
+        require(vouchers.length <= 50, "Batch size exceeds limit");
+
+        for (uint256 i = 0; i < vouchers.length; i++) {
+            _mintEventTicketsInternal(vouchers[i], signatures[i]);
+        }
     }
 
     // --- TÍNH NĂNG 3: BATCH CHECK-IN (QUAN TRỌNG) ---
