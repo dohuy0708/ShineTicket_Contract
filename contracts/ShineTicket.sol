@@ -19,6 +19,7 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
     struct MintVoucher {
         uint256 eventId;
         uint256 quantity;
+        uint256 price;
         uint256 commissionRateBps;
         uint256 relayerGasPerTicket;
         uint256 checkinGasPerTicket;
@@ -36,7 +37,7 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
 
     // --- KHAI BÁO BIẾN TRẠNG THÁI ---
     bytes32 public constant VOUCHER_TYPEHASH = keccak256(
-        "MintVoucher(uint256 eventId,uint256 quantity,uint256 commissionRateBps,uint256 relayerGasPerTicket,uint256 checkinGasPerTicket,uint64 expiryTime,uint256 nonce)"
+        "MintVoucher(uint256 eventId,uint256 quantity,uint256 price,uint256 commissionRateBps,uint256 relayerGasPerTicket,uint256 checkinGasPerTicket,uint64 expiryTime,uint256 nonce)"
     );
 
     IERC20 public immutable usdtToken; // Hardcode token thanh toán chống thao túng
@@ -96,6 +97,7 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
                     VOUCHER_TYPEHASH,
                     voucher.eventId,
                     voucher.quantity,
+                    voucher.price,
                     voucher.commissionRateBps,
                     voucher.relayerGasPerTicket,
                     voucher.checkinGasPerTicket,
@@ -110,6 +112,7 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
         // 3. Khởi tạo dữ liệu sự kiện (nếu chưa có)
         if (events[voucher.eventId].organizer == address(0)) {
             events[voucher.eventId].organizer = msg.sender;
+            events[voucher.eventId].price = voucher.price;
             events[voucher.eventId].expiryTime = voucher.expiryTime;
             events[voucher.eventId].isActive = true;
             
@@ -254,7 +257,8 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
      * @dev Customer tự mua vé bằng Crypto (USDT). 
      * Khóa trực tiếp USDT từ ví user vào Contract. Mint vé cho user.
      */
-    function buyTicket(uint256 eventId, uint256 quantity) external whenNotPaused nonReentrant {
+    function buyTicket(uint256 eventId, uint256 quantity, address recipient) external whenNotPaused nonReentrant {
+        require(recipient != address(0), "Invalid recipient");
         Event memory evt = events[eventId];
         require(evt.isActive, "Event is not active");
         
@@ -267,9 +271,9 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
         // Ghi nhận doanh thu sự kiện
         eventRevenue[eventId] += totalPrice;
 
-        // Cấp phát số lượng vé trực tiếp cho Customer (msg.sender)
+        // Cấp phát số lượng vé trực tiếp cho Customer đích (recipient)
         uint256 startTokenId = _nextTokenId();
-        _safeMint(msg.sender, quantity);
+        _safeMint(recipient, quantity);
 
         // Đánh dấu vé thuộc về sự kiện để quản lý hạn check-in
         for (uint256 i = 0; i < quantity; i++) {
