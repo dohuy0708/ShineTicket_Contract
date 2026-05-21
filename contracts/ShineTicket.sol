@@ -282,6 +282,55 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
     }
 
     /**
+     * @dev NÂNG CẤP V3: Khách hàng mua GỘP nhiều hạng vé khác nhau trong 1 giao dịch Crypto (USDT).
+     * @param eventIds Mảng chứa ID của các hạng vé muốn mua (onChainId)
+     * @param quantities Mảng chứa số lượng tương ứng cho từng hạng vé
+     * @param recipient Địa chỉ ví Privy nhận NFT vé
+     */
+    function batchBuyTickets(
+        uint256[] calldata eventIds,
+        uint256[] calldata quantities,
+        address recipient
+    ) external whenNotPaused nonReentrant {
+        require(eventIds.length > 0, "Empty arrays");
+        require(eventIds.length == quantities.length, "Data mismatch");
+        require(recipient != address(0), "Invalid recipient");
+
+        uint256 totalPriceSum = 0;
+
+        for (uint256 i = 0; i < eventIds.length; i++) {
+            uint256 eventId = eventIds[i];
+            uint256 quantity = quantities[i];
+
+            Event memory evt = events[eventId];
+            require(evt.isActive, "One of the events is not active");
+            require(quantity > 0, "Quantity must be greater than zero");
+
+            uint256 itemPrice = evt.price * quantity;
+            require(itemPrice > 0, "Price not set for one of the events");
+
+            totalPriceSum += itemPrice;
+        }
+
+        require(usdtToken.transferFrom(msg.sender, address(this), totalPriceSum), "USDT transfer failed");
+
+        for (uint256 i = 0; i < eventIds.length; i++) {
+            uint256 eventId = eventIds[i];
+            uint256 quantity = quantities[i];
+            uint256 itemPrice = events[eventId].price * quantity;
+
+            eventRevenue[eventId] += itemPrice;
+
+            uint256 startTokenId = _nextTokenId();
+            _safeMint(recipient, quantity);
+
+            for (uint256 j = 0; j < quantity; j++) {
+                ticketToEvent[startTokenId + j] = eventId;
+            }
+        }
+    }
+
+    /**
      * @dev Nền tảng (Relayer) mua vé hộ cho khách chuyển khoản VNĐ.
      * Nền tảng trừ trước USDT của ví chủ/Worker, gọi hàm này để Mint vé từ xa vào cục bộ ví khách (buyerAddress)
      */
@@ -307,6 +356,53 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
         }
 
         eventRelayerSoldCount[eventId] += quantity;
+    }
+
+    /**
+     * @dev NÂNG CẤP V3: Worker hệ thống mua GỘP nhiều hạng vé hộ khách chuyển khoản VND.
+     */
+    function batchRelayerBuyTicket(
+        uint256[] calldata eventIds,
+        uint256[] calldata quantities,
+        address buyerAddress
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) whenNotPaused nonReentrant {
+        require(eventIds.length > 0, "Empty arrays");
+        require(eventIds.length == quantities.length, "Data mismatch");
+        require(buyerAddress != address(0), "Invalid buyer address");
+
+        uint256 totalPriceSum = 0;
+
+        for (uint256 i = 0; i < eventIds.length; i++) {
+            uint256 eventId = eventIds[i];
+            uint256 quantity = quantities[i];
+
+            Event memory evt = events[eventId];
+            require(evt.isActive, "Event is not active");
+            require(quantity > 0, "Quantity must be greater than zero");
+
+            uint256 itemPrice = evt.price * quantity;
+            require(itemPrice > 0, "Price not set or quantity zero");
+
+            totalPriceSum += itemPrice;
+        }
+
+        require(usdtToken.transferFrom(msg.sender, address(this), totalPriceSum), "USDT transfer failed");
+
+        for (uint256 i = 0; i < eventIds.length; i++) {
+            uint256 eventId = eventIds[i];
+            uint256 quantity = quantities[i];
+            uint256 itemPrice = events[eventId].price * quantity;
+
+            eventRevenue[eventId] += itemPrice;
+            eventRelayerSoldCount[eventId] += quantity;
+
+            uint256 startTokenId = _nextTokenId();
+            _safeMint(buyerAddress, quantity);
+
+            for (uint256 j = 0; j < quantity; j++) {
+                ticketToEvent[startTokenId + j] = eventId;
+            }
+        }
     }
 
     // --- TÍNH NĂNG 7: RÚT TIỀN (PULL OVER PUSH) ---

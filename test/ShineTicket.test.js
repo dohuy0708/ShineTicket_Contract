@@ -39,6 +39,7 @@ describe("ShineTicket Phase 2", function () {
       MintVoucher: [
         { name: "eventId", type: "uint256" },
         { name: "quantity", type: "uint256" },
+        { name: "price", type: "uint256" },
         { name: "commissionRateBps", type: "uint256" },
         { name: "relayerGasPerTicket", type: "uint256" },
         { name: "checkinGasPerTicket", type: "uint256" },
@@ -59,6 +60,7 @@ describe("ShineTicket Phase 2", function () {
     const voucher = {
       eventId,
       quantity,
+      price,
       commissionRateBps: 300,
       relayerGasPerTicket: ethers.parseUnits("0.02", 18),
       checkinGasPerTicket: ethers.parseUnits("0.01", 18),
@@ -116,6 +118,7 @@ describe("ShineTicket Phase 2", function () {
       const voucher = {
         eventId: 1,
         quantity: 3,
+        price: ethers.parseUnits("10", 18),
         commissionRateBps: 250,
         relayerGasPerTicket: ethers.parseUnits("0.02", 18),
         checkinGasPerTicket: ethers.parseUnits("0.01", 18),
@@ -138,6 +141,7 @@ describe("ShineTicket Phase 2", function () {
       const voucher = {
         eventId: 1,
         quantity: 1,
+        price: ethers.parseUnits("10", 18),
         commissionRateBps: 300,
         relayerGasPerTicket: ethers.parseUnits("0.02", 18),
         checkinGasPerTicket: ethers.parseUnits("0.01", 18),
@@ -162,10 +166,35 @@ describe("ShineTicket Phase 2", function () {
         .connect(buyer)
         .approve(await shineTicket.getAddress(), total);
 
-      await shineTicket.connect(buyer).buyTicket(1, 2);
+      await shineTicket.connect(buyer).buyTicket(1, 2, buyer.address);
 
       expect(await shineTicket.balanceOf(buyer.address)).to.equal(2);
       expect(await shineTicket.eventRevenue(1)).to.equal(total);
+      expect(await mockUSDT.balanceOf(await shineTicket.getAddress())).to.equal(
+        total,
+      );
+    });
+
+    it("allows batch direct buyer purchase with mixed ticket classes", async function () {
+      await bootstrapEvent(1, 5, ethers.parseUnits("20", 18));
+      await bootstrapEvent(2, 5, ethers.parseUnits("15", 18));
+
+      const total = ethers.parseUnits("55", 18);
+      await mockUSDT
+        .connect(buyer)
+        .approve(await shineTicket.getAddress(), total);
+
+      await shineTicket
+        .connect(buyer)
+        .batchBuyTickets([1, 2], [2, 1], buyer.address);
+
+      expect(await shineTicket.balanceOf(buyer.address)).to.equal(3);
+      expect(await shineTicket.eventRevenue(1)).to.equal(
+        ethers.parseUnits("40", 18),
+      );
+      expect(await shineTicket.eventRevenue(2)).to.equal(
+        ethers.parseUnits("15", 18),
+      );
       expect(await mockUSDT.balanceOf(await shineTicket.getAddress())).to.equal(
         total,
       );
@@ -183,6 +212,30 @@ describe("ShineTicket Phase 2", function () {
 
       expect(await shineTicket.balanceOf(buyer.address)).to.equal(3);
       expect(await shineTicket.eventRevenue(1)).to.equal(total);
+    });
+
+    it("allows batch admin relayer purchase for fiat flow", async function () {
+      await bootstrapEvent(1, 5, ethers.parseUnits("15", 18));
+      await bootstrapEvent(2, 5, ethers.parseUnits("25", 18));
+
+      const total = ethers.parseUnits("55", 18);
+      await mockUSDT
+        .connect(owner)
+        .approve(await shineTicket.getAddress(), total);
+
+      await shineTicket
+        .connect(owner)
+        .batchRelayerBuyTicket([1, 2], [2, 1], buyer.address);
+
+      expect(await shineTicket.balanceOf(buyer.address)).to.equal(3);
+      expect(await shineTicket.eventRevenue(1)).to.equal(
+        ethers.parseUnits("30", 18),
+      );
+      expect(await shineTicket.eventRevenue(2)).to.equal(
+        ethers.parseUnits("25", 18),
+      );
+      expect(await shineTicket.eventRelayerSoldCount(1)).to.equal(2);
+      expect(await shineTicket.eventRelayerSoldCount(2)).to.equal(1);
     });
 
     it("blocks non-admin from relayer buy", async function () {
