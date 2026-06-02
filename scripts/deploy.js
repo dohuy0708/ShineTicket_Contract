@@ -48,6 +48,22 @@ async function main() {
   console.log("USDT token address:", usdtAddress);
   console.log("----------------------------------------");
 
+  // 4.5. Deploy ShineMarketplace
+  const platformFeeBps = 500; // 5% fee
+  const ShineMarketplace = await ethers.getContractFactory("ShineMarketplace");
+  const shineMarketplace = await ShineMarketplace.deploy(
+    address,        // Địa chỉ ShineTicket
+    usdtAddress,    // Địa chỉ USDT
+    deployer.address, // Ví Treasury của Admin
+    platformFeeBps
+  );
+  await shineMarketplace.waitForDeployment();
+  const scMarketplaceAddress = await shineMarketplace.getAddress();
+  
+  console.log("----------------------------------------");
+  console.log("ShineMarketplace deployed to:", scMarketplaceAddress);
+  console.log("----------------------------------------");
+
   // 5. Grant default roles
   const OPERATOR_ROLE = ethers.id("OPERATOR_ROLE");
   const ORGANIZER_ROLE = ethers.id("ORGANIZER_ROLE");
@@ -55,19 +71,19 @@ async function main() {
 
   const operatorAddress = process.env.OPERATOR_ADDRESS || deployer.address;
   const organizerAddress = process.env.ORGANIZER_ADDRESS || deployer.address;
-  const marketplaceAddress =
-    process.env.MARKETPLACE_ADDRESS || deployer.address;
-
+  
   await (await shineTicket.grantRole(OPERATOR_ROLE, operatorAddress)).wait();
   await (await shineTicket.grantRole(ORGANIZER_ROLE, organizerAddress)).wait();
+  
+  // Quan trọng: Phân quyền MARKETPLACE_ROLE cho chính Smart Contract ShineMarketplace
   await (
-    await shineTicket.grantRole(MARKETPLACE_ROLE, marketplaceAddress)
+    await shineTicket.grantRole(MARKETPLACE_ROLE, scMarketplaceAddress)
   ).wait();
 
   console.log("Default roles granted:");
   console.log("OPERATOR_ROLE:", operatorAddress);
   console.log("ORGANIZER_ROLE:", organizerAddress);
-  console.log("MARKETPLACE_ROLE:", marketplaceAddress);
+  console.log("MARKETPLACE_ROLE:", scMarketplaceAddress);
 
   // 6. Verify code (Chỉ chạy khi không phải mạng local)
   if (
