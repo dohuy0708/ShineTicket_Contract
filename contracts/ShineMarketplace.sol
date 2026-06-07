@@ -84,6 +84,41 @@ contract ShineMarketplace is ReentrancyGuard, Ownable {
         emit TicketListed(tokenId, msg.sender, price, fundReceiver);
     }
 
+    // 1.1 Rao bán nhiều vé (Batch List)
+    function batchListTickets(
+        uint256[] calldata tokenIds,
+        uint256[] calldata prices,
+        address fundReceiver
+    ) external {
+        require(tokenIds.length == prices.length, "Array lengths mismatch");
+        require(tokenIds.length > 0, "Empty arrays");
+        require(fundReceiver != address(0), "Invalid fund receiver");
+
+        bool isApprovedAll = shineTicket.isApprovedForAll(msg.sender, address(this));
+
+        for (uint256 i = 0; i < tokenIds.length; i++) {
+            uint256 tokenId = tokenIds[i];
+            uint256 price = prices[i];
+
+            require(shineTicket.ownerOf(tokenId) == msg.sender, "Not the ticket owner");
+            require(!shineTicket.ticketUsed(tokenId), "Ticket already checked-in");
+            require(price > 0, "Price must be > 0");
+
+            require(
+                isApprovedAll || shineTicket.getApproved(tokenId) == address(this),
+                "Marketplace not approved to transfer this ticket"
+            );
+
+            listings[tokenId] = Listing({
+                seller: msg.sender,
+                price: price,
+                fundReceiver: fundReceiver
+            });
+
+            emit TicketListed(tokenId, msg.sender, price, fundReceiver);
+        }
+    }
+
     // 2. Hủy rao bán
     function cancelListing(uint256 tokenId) external {
         Listing memory listing = listings[tokenId];
@@ -92,6 +127,20 @@ contract ShineMarketplace is ReentrancyGuard, Ownable {
         delete listings[tokenId];
         
         emit TicketCanceled(tokenId, msg.sender);
+    }
+
+    // 2.1 Hủy rao bán nhiều vé (Batch Cancel)
+    function batchCancelListings(uint256[] calldata tokenIds) external {
+        require(tokenIds.length > 0, "Empty array");
+        for (uint256 i = 0; i < tokenIds.length; i++) {
+            uint256 tokenId = tokenIds[i];
+            Listing memory listing = listings[tokenId];
+            require(listing.seller == msg.sender, "Not the seller");
+            
+            delete listings[tokenId];
+            
+            emit TicketCanceled(tokenId, msg.sender);
+        }
     }
 
     // 3. Mua vé
@@ -119,5 +168,52 @@ contract ShineMarketplace is ReentrancyGuard, Ownable {
         shineTicket.transferFrom(listing.seller, destinationPrivyAddress, tokenId);
 
         emit TicketSold(tokenId, destinationPrivyAddress, listing.price, listing.fundReceiver);
+    }
+
+    // 3.1 Mua nhiều vé (Batch Buy)
+    function batchBuyTicketsFor(
+        uint256[] calldata tokenIds, 
+        address destinationPrivyAddress
+    ) external nonReentrant {
+        require(tokenIds.length > 0, "Empty array");
+        require(destinationPrivyAddress != address(0), "Invalid destination address");
+        
+        uint256 totalPrice = 0;
+        
+        // Pass 1: Tính tổng tiền và kiểm tra tính hợp lệ
+        for (uint256 i = 0; i < tokenIds.length; i++) {
+            uint256 tokenId = tokenIds[i];
+            Listing memory listing = listings[tokenId];
+            require(listing.price > 0, "Ticket is not listed");
+            require(shineTicket.ownerOf(tokenId) == listing.seller, "Seller no longer owns this ticket");
+            totalPrice += listing.price;
+        }
+
+        // Rút tổng tiền USDT từ người mua về SC (Tiết kiệm gas thay vì transferFrom liên tục)
+        require(usdtToken.transferFrom(msg.sender, address(this), totalPrice), "USDT total transfer failed");
+
+        uint256 totalPlatformFee = 0;
+
+        // Pass 2: Chia tiền và gửi NFT
+        for (uint256 i = 0; i < tokenIds.length; i++) {
+            uint256 tokenId = tokenIds[i];
+            Listing memory listing = listings[tokenId];
+            
+            uint256 platformFee = (listing.price * platformFeeBps) / 10000;
+            uint256 sellerAmount = listing.price - platformFee;
+            totalPlatformFee += platformFee;
+            
+            delete listings[tokenId];
+            
+            require(usdtToken.transfer(listing.fundReceiver, sellerAmount), "USDT seller transfer failed");
+            
+            shineTicket.transferFrom(listing.seller, destinationPrivyAddress, tokenId);
+            
+            emit TicketSold(tokenId, destinationPrivyAddress, listing.price, listing.fundReceiver);
+        }
+        
+        if (totalPlatformFee > 0) {
+            require(usdtToken.transfer(adminTreasury, totalPlatformFee), "USDT admin fee transfer failed");
+        }
     }
 }

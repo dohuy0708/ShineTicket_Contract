@@ -62,6 +62,9 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
     // --- SỰ KIỆN ---
     event TicketsCheckedIn(uint256[] tokenIds, uint256 timestamp);
     
+    // [NEW] Event mới giúp Frontend/Worker dễ dàng bóc tách ID vé vừa Mint/Mua
+    event EventTicketsMinted(uint256 indexed eventId, address indexed recipient, uint256 startTokenId, uint256 quantity);
+    
     // --- KHỞI TẠO ---
     constructor(address defaultAdmin, address _usdtToken) 
         ERC721A("ShineTicket", "SHINE") 
@@ -78,14 +81,18 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
     function mintBatchUsers(address[] calldata recipients, uint256[] calldata quantities) external onlyRole(DEFAULT_ADMIN_ROLE) whenNotPaused {
         require(recipients.length == quantities.length, "Data mismatch");
         for (uint256 i = 0; i < recipients.length; i++) {
+            uint256 startTokenId = _nextTokenId(); // [NEW] Lấy ID hiện tại
             _safeMint(recipients[i], quantities[i]);
+            
+            // [NEW] Emit event cho mỗi batch user
+            emit EventTicketsMinted(0, recipients[i], startTokenId, quantities[i]); 
         }
     }
 
     // --- TÍNH NĂNG 2: MINT SỰ KIỆN TỪ VOUCHER CỦA ADMIN (EIP-712) ---
 
-    // Hàm nội bộ xử lý logic mint và xác thực cho 1 voucher
-    function _mintEventTicketsInternal(MintVoucher calldata voucher, bytes calldata signature) internal {
+    // [NEW] Cập nhật hàm nội bộ để trả về startTokenId
+    function _mintEventTicketsInternal(MintVoucher calldata voucher, bytes calldata signature) internal returns (uint256) {
         // 1. Chống MINT LẠI (Replay Attack)
         require(!usedNonces[voucher.nonce], "Voucher has already been used");
         usedNonces[voucher.nonce] = true;
@@ -134,41 +141,45 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
         }
 
         eventMintedCount[voucher.eventId] += voucher.quantity;
+
+        // [NEW] Emit Event để FE chộp dữ liệu
+        emit EventTicketsMinted(voucher.eventId, msg.sender, startTokenId, voucher.quantity);
+        
+        return startTokenId; // [NEW] Trả về giá trị
     }
 
-    // Hàm đúc đơn lẻ giữ lại để tương thích ngược
-    function mintEventTickets(MintVoucher calldata voucher, bytes calldata signature) external whenNotPaused {
-        _mintEventTicketsInternal(voucher, signature);
+    // [NEW] Cập nhật hàm đúc đơn lẻ có giá trị trả về
+    function mintEventTickets(MintVoucher calldata voucher, bytes calldata signature) external whenNotPaused returns (uint256) {
+        return _mintEventTicketsInternal(voucher, signature);
     }
 
-    // Hàm đúc lô nhiều voucher cùng lúc
-    function batchMintEventTickets(MintVoucher[] calldata vouchers, bytes[] calldata signatures) external whenNotPaused {
+    // [NEW] Cập nhật hàm đúc lô để trả về mảng startTokenIds
+    function batchMintEventTickets(MintVoucher[] calldata vouchers, bytes[] calldata signatures) external whenNotPaused returns (uint256[] memory) {
         require(vouchers.length > 0, "Empty arrays");
         require(vouchers.length == signatures.length, "Data mismatch");
         require(vouchers.length <= 50, "Batch size exceeds limit");
 
+        uint256[] memory startTokenIds = new uint256[](vouchers.length); // [NEW] Tạo mảng lưu trữ
+
         for (uint256 i = 0; i < vouchers.length; i++) {
-            _mintEventTicketsInternal(vouchers[i], signatures[i]);
+            startTokenIds[i] = _mintEventTicketsInternal(vouchers[i], signatures[i]); // [NEW] Gán kết quả
         }
+
+        return startTokenIds; // [NEW] Trả về mảng cho caller
     }
 
     // --- TÍNH NĂNG 3: BATCH CHECK-IN (QUAN TRỌNG) ---
+    // (Giữ nguyên cấu trúc Check-in hiện tại vì đã chuẩn)
     
-    /**
-     * @dev NÂNG CẤP: Cho phép Worker đồng bộ trạng thái nhiều vé cùng lúc.
-     * Ví dụ: Worker gom 50 vé đã soát ở cổng, gọi hàm này 1 lần duy nhất.
-     */
     function batchCheckIn(uint256[] calldata tokenIds) external onlyRole(OPERATOR_ROLE) whenNotPaused {
         for (uint256 i = 0; i < tokenIds.length; i++) {
             uint256 tokenId = tokenIds[i];
 
-            // Ràng buộc thời gian Date Expiry (Module Check-in V2)
             uint256 eventId = ticketToEvent[tokenId];
             if (eventId != 0) {
                 require(block.timestamp <= events[eventId].expiryTime, "Event ticket expired");
             }
             
-            // Chỉ xử lý nếu vé tồn tại và chưa dùng 
             if (_exists(tokenId) && !ticketUsed[tokenId]) {
                 ticketUsed[tokenId] = true;
 
@@ -177,15 +188,10 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
                 }
             }
         }
-        // Emit 1 event cho cả mảng để tiết kiệm gas
         emit TicketsCheckedIn(tokenIds, block.timestamp);
     }
 
-    /**
-     * @dev Hàm cũ (giữ lại nếu muốn test lẻ, nhưng thực tế sẽ ít dùng)
-     */
     function checkIn(uint256 tokenId) external onlyRole(OPERATOR_ROLE) whenNotPaused {
-        // Ràng buộc Date Expiry (Module Check-in V2)
         uint256 eventId = ticketToEvent[tokenId];
         if (eventId != 0) {
             require(block.timestamp <= events[eventId].expiryTime, "Event ticket expired");
@@ -199,7 +205,6 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
             eventCheckedInCount[eventId] += 1;
         }
         
-        // Tạo mảng tạm để emit event cho thống nhất
         uint256[] memory ids = new uint256[](1);
         ids[0] = tokenId;
         emit TicketsCheckedIn(ids, block.timestamp);
@@ -207,20 +212,13 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
 
     // --- TÍNH NĂNG 4: CHẶN CHUYỂN VÉ ĐÃ DÙNG (BẢO MẬT) ---
 
-    /**
-     * @dev Hook của ERC721A chạy trước khi chuyển token.
-     * Chặn không cho chuyển vé (Transfer) nếu vé đó đã Check-in.
-     */
     function _beforeTokenTransfers(
         address from,
         address to,
         uint256 startTokenId,
         uint256 quantity
     ) internal virtual override whenNotPaused {
-        // Cho phép mint (from == 0) và burn (to == 0)
         if (from != address(0) && to != address(0)) {
-            // --- HYBRID WALLED GARDEN ---
-            // Chặn chuyển P2P tự do. Chỉ cho phép nếu có dính tới Marketplace hoặc Admin.
             bool isMarketplace = hasRole(DEFAULT_ADMIN_ROLE, from) || 
                                  hasRole(DEFAULT_ADMIN_ROLE, to) || 
                                  hasRole(MARKETPLACE_ROLE, from) || 
@@ -228,36 +226,28 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
                                  hasRole(MARKETPLACE_ROLE, msg.sender);
             require(isMarketplace, "Transfer locked: Only Official Marketplace allowed");
 
-            // Kiểm tra từng token trong batch chuyển đi (chặn cho tặng vé đã soát ở cổng)
             for (uint256 i = 0; i < quantity; i++) {
                 require(!ticketUsed[startTokenId + i], "Used ticket cannot be transferred");
             }
         }
         super._beforeTokenTransfers(from, to, startTokenId, quantity);
     }
+
     // --- TÍNH NĂNG 5: QUẢN LÝ VÒNG ĐỜI (ADMIN ONLY) ---
 
-    /**
-     * @dev Chỉ Admin mới có quyền hủy vé (Ví dụ: Vé bị hack, hoặc hoàn tiền hủy show).
-     * User không tự burn được.
-     */
     function revokeTicket(uint256 tokenId) external onlyRole(DEFAULT_ADMIN_ROLE) whenNotPaused {
         _burn(tokenId); 
     }
 
     // --- TÍNH NĂNG 6: MUA VÉ TRỰC TIẾP (KẾT NỐI ESCROW) ---
 
-    //set giá cho sự kiện, chỉ organizer mới được set giá cho sự kiện của mình
     function setEventPrice(uint256 eventId, uint256 price) external whenNotPaused {
         require(events[eventId].organizer == msg.sender, "Not organizer");
         events[eventId].price = price;
     }
 
-    /**
-     * @dev Customer tự mua vé bằng Crypto (USDT). 
-     * Khóa trực tiếp USDT từ ví user vào Contract. Mint vé cho user.
-     */
-    function buyTicket(uint256 eventId, uint256 quantity, address recipient) external whenNotPaused nonReentrant {
+    // [NEW] Cập nhật hàm mua lẻ trả về startTokenId
+    function buyTicket(uint256 eventId, uint256 quantity, address recipient) external whenNotPaused nonReentrant returns (uint256) {
         require(recipient != address(0), "Invalid recipient");
         Event memory evt = events[eventId];
         require(evt.isActive, "Event is not active");
@@ -265,38 +255,34 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
         uint256 totalPrice = evt.price * quantity;
         require(totalPrice > 0, "Price not set or quantity zero");
 
-        // Khóa USDT vào contract (Escrow)
         require(usdtToken.transferFrom(msg.sender, address(this), totalPrice), "USDT transfer failed");
-
-        // Ghi nhận doanh thu sự kiện
         eventRevenue[eventId] += totalPrice;
 
-        // Cấp phát số lượng vé trực tiếp cho Customer đích (recipient)
         uint256 startTokenId = _nextTokenId();
         _safeMint(recipient, quantity);
 
-        // Đánh dấu vé thuộc về sự kiện để quản lý hạn check-in
         for (uint256 i = 0; i < quantity; i++) {
             ticketToEvent[startTokenId + i] = eventId;
         }
+
+        // [NEW] Emit Event 
+        emit EventTicketsMinted(eventId, recipient, startTokenId, quantity);
+
+        return startTokenId; // [NEW] Return
     }
 
-    /**
-     * @dev NÂNG CẤP V3: Khách hàng mua GỘP nhiều hạng vé khác nhau trong 1 giao dịch Crypto (USDT).
-     * @param eventIds Mảng chứa ID của các hạng vé muốn mua (onChainId)
-     * @param quantities Mảng chứa số lượng tương ứng cho từng hạng vé
-     * @param recipient Địa chỉ ví Privy nhận NFT vé
-     */
+    // [NEW] Cập nhật hàm mua lô trả về mảng startTokenIds
     function batchBuyTickets(
         uint256[] calldata eventIds,
         uint256[] calldata quantities,
         address recipient
-    ) external whenNotPaused nonReentrant {
+    ) external whenNotPaused nonReentrant returns (uint256[] memory) {
         require(eventIds.length > 0, "Empty arrays");
         require(eventIds.length == quantities.length, "Data mismatch");
         require(recipient != address(0), "Invalid recipient");
 
         uint256 totalPriceSum = 0;
+        uint256[] memory startTokenIds = new uint256[](eventIds.length); // [NEW] Mảng lưu trữ
 
         for (uint256 i = 0; i < eventIds.length; i++) {
             uint256 eventId = eventIds[i];
@@ -327,27 +313,25 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
             for (uint256 j = 0; j < quantity; j++) {
                 ticketToEvent[startTokenId + j] = eventId;
             }
+
+            startTokenIds[i] = startTokenId; // [NEW] Gán kết quả
+            emit EventTicketsMinted(eventId, recipient, startTokenId, quantity); // [NEW] Emit Event
         }
+
+        return startTokenIds; // [NEW] Return
     }
 
-    /**
-     * @dev Nền tảng (Relayer) mua vé hộ cho khách chuyển khoản VNĐ.
-     * Nền tảng trừ trước USDT của ví chủ/Worker, gọi hàm này để Mint vé từ xa vào cục bộ ví khách (buyerAddress)
-     */
-    function relayerBuyTicket(uint256 eventId, uint256 quantity, address buyerAddress) external onlyRole(DEFAULT_ADMIN_ROLE) whenNotPaused nonReentrant {
+    // [NEW] Cập nhật hàm Relayer mua lẻ
+    function relayerBuyTicket(uint256 eventId, uint256 quantity, address buyerAddress) external onlyRole(DEFAULT_ADMIN_ROLE) whenNotPaused nonReentrant returns (uint256) {
         Event memory evt = events[eventId];
         require(evt.isActive, "Event is not active");
         
         uint256 totalPrice = evt.price * quantity;
         require(totalPrice > 0, "Price not set or quantity zero");
 
-        // Khóa USDT vào contract từ ví của Admin Relayer (msg.sender)
         require(usdtToken.transferFrom(msg.sender, address(this), totalPrice), "USDT transfer failed");
-
-        // Ghi nhận doanh thu sự kiện (để tính gộp cho Organizer về sau)
         eventRevenue[eventId] += totalPrice;
 
-        // Mint vé phân bổ thẳng về tay khách (buyerAddress)
         uint256 startTokenId = _nextTokenId();
         _safeMint(buyerAddress, quantity);
 
@@ -356,21 +340,25 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
         }
 
         eventRelayerSoldCount[eventId] += quantity;
+
+        // [NEW] Emit Event 
+        emit EventTicketsMinted(eventId, buyerAddress, startTokenId, quantity);
+
+        return startTokenId; // [NEW] Return
     }
 
-    /**
-     * @dev NÂNG CẤP V3: Worker hệ thống mua GỘP nhiều hạng vé hộ khách chuyển khoản VND.
-     */
+    // [NEW] Cập nhật hàm Relayer mua lô trả về mảng startTokenIds
     function batchRelayerBuyTicket(
         uint256[] calldata eventIds,
         uint256[] calldata quantities,
         address buyerAddress
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) whenNotPaused nonReentrant {
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) whenNotPaused nonReentrant returns (uint256[] memory) {
         require(eventIds.length > 0, "Empty arrays");
         require(eventIds.length == quantities.length, "Data mismatch");
         require(buyerAddress != address(0), "Invalid buyer address");
 
         uint256 totalPriceSum = 0;
+        uint256[] memory startTokenIds = new uint256[](eventIds.length); // [NEW] Mảng lưu trữ
 
         for (uint256 i = 0; i < eventIds.length; i++) {
             uint256 eventId = eventIds[i];
@@ -402,7 +390,12 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
             for (uint256 j = 0; j < quantity; j++) {
                 ticketToEvent[startTokenId + j] = eventId;
             }
+
+            startTokenIds[i] = startTokenId; // [NEW] Gán kết quả
+            emit EventTicketsMinted(eventId, buyerAddress, startTokenId, quantity); // [NEW] Emit Event
         }
+
+        return startTokenIds; // [NEW] Return
     }
 
     // --- TÍNH NĂNG 7: RÚT TIỀN (PULL OVER PUSH) ---
@@ -418,20 +411,16 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
         uint256 totalGross = eventRevenue[eventId];
         require(totalGross > 0, "No revenue to claim");
 
-        // Công thức tính toán theo business mới
         uint256 commission = (totalGross * eventCommissionRateBps[eventId]) / 10000;
         uint256 opsCost =
             (eventRelayerSoldCount[eventId] * eventRelayerGasPerTicket[eventId]) +
             (eventCheckedInCount[eventId] * eventCheckinGasPerTicket[eventId]);
         uint256 totalDeduction = commission + opsCost;
 
-        // Tránh tình trạng sự kiện ế vé, không đủ trả phí nền tảng
         require(totalGross >= totalDeduction, "Revenue is less than system fees");
         
-        // Lợi nhuận ròng của Organizer
         uint256 netRevenue = totalGross - totalDeduction;
 
-        // Thực hiện lệnh pull transfer
         if (netRevenue > 0) {
             require(usdtToken.transfer(msg.sender, netRevenue), "Organizer transfer failed");
         }
@@ -441,8 +430,6 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
         }
 
         eventRevenue[eventId] = 0;
-        
-        // Admin sẽ gọi hàm rút gộp quỹ Platform Fee sau từ ví Admin (mở rộng về sau)
     }
 
     function setEventCostConfig(
@@ -461,12 +448,11 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
 
     // --- HELPER & CONFIG ---
 
-    // Hàm View cho Frontend check 1 lúc nhiều vé
     function getBatchTicketStatus(uint256[] calldata tokenIds) external view returns (bool[] memory) {
         bool[] memory statuses = new bool[](tokenIds.length);
         for (uint256 i = 0; i < tokenIds.length; i++) {
             if (!_exists(tokenIds[i])) {
-                statuses[i] = false; // Coi như chưa dùng (hoặc không tồn tại)
+                statuses[i] = false; 
             } else {
                 statuses[i] = ticketUsed[tokenIds[i]];
             }
@@ -496,16 +482,11 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
     }
 
     // --- BỔ SUNG CHANGELOG: Module Check-in V2 ---
-    /**
-     * @dev Gia hạn thời gian check-in của 1 Sự kiện nếu có sự cố hoặc Delay tổ chức.
-     * Chỉ Admin hệ thống mới có quyền ghi đè thời gian này.
-     */
     function extendEventExpiry(uint256 eventId, uint64 newExpiry) external onlyRole(DEFAULT_ADMIN_ROLE) whenNotPaused {
         require(events[eventId].organizer != address(0), "Event does not exist");
         events[eventId].expiryTime = newExpiry;
     }
 
-    // --- BẮT BUỘC OVERRIDE CHO ACCESSCONTROL VÀ ERC721A ---
     function supportsInterface(bytes4 interfaceId) public view virtual override(ERC721A, AccessControl) returns (bool) {
         return super.supportsInterface(interfaceId);
     }
