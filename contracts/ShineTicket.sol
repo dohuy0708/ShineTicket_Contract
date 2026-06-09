@@ -403,7 +403,6 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
         Event memory evt = events[eventId];
         
         require(evt.organizer == msg.sender, "Only organizer can claim");
-        require(block.timestamp > evt.expiryTime, "Event not ended yet");
         require(!fundsClaimed[eventId], "Funds already claimed");
 
         fundsClaimed[eventId] = true;
@@ -430,6 +429,50 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
         }
 
         eventRevenue[eventId] = 0;
+    }
+
+    // --- TÍNH NĂNG 7.1: TẤT TOÁN TOÀN BỘ SỰ KIỆN (BATCH CLAIM) ---
+    function batchClaimFunds(uint256[] calldata onChainIds) external nonReentrant whenNotPaused {
+        require(onChainIds.length > 0, "Empty array");
+
+        uint256 totalNetRevenue = 0;
+        uint256 totalPlatformDeduction = 0;
+
+        for (uint256 i = 0; i < onChainIds.length; i++) {
+            uint256 onChainId = onChainIds[i];
+            Event memory evt = events[onChainId];
+
+            require(evt.organizer == msg.sender, "Not organizer of all tickets");
+
+            if (fundsClaimed[onChainId] || eventRevenue[onChainId] == 0) {
+                continue;
+            }
+
+            fundsClaimed[onChainId] = true;
+
+            uint256 gross = eventRevenue[onChainId];
+            uint256 commission = (gross * eventCommissionRateBps[onChainId]) / 10000;
+            uint256 opsCost =
+                (eventRelayerSoldCount[onChainId] * eventRelayerGasPerTicket[onChainId]) +
+                (eventCheckedInCount[onChainId] * eventCheckinGasPerTicket[onChainId]);
+
+            uint256 deduction = commission + opsCost;
+            require(gross >= deduction, "Revenue less than fees");
+
+            totalNetRevenue += (gross - deduction);
+            totalPlatformDeduction += deduction;
+
+            eventRevenue[onChainId] = 0;
+        }
+
+        require(totalNetRevenue > 0 || totalPlatformDeduction > 0, "No valid revenue to claim in batch");
+
+        if (totalNetRevenue > 0) {
+            require(usdtToken.transfer(msg.sender, totalNetRevenue), "Organizer transfer failed");
+        }
+        if (totalPlatformDeduction > 0) {
+            require(usdtToken.transfer(adminTreasury, totalPlatformDeduction), "Admin transfer failed");
+        }
     }
 
     function setEventCostConfig(
