@@ -64,6 +64,7 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
     
     // [NEW] Event mới giúp Frontend/Worker dễ dàng bóc tách ID vé vừa Mint/Mua
     event EventTicketsMinted(uint256 indexed eventId, address indexed recipient, uint256 startTokenId, uint256 quantity);
+    event EventRegistered(uint256 indexed eventId, address indexed organizer);
     
     // --- KHỞI TẠO ---
     constructor(address defaultAdmin, address _usdtToken) 
@@ -91,9 +92,9 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
 
     // --- TÍNH NĂNG 2: MINT SỰ KIỆN TỪ VOUCHER CỦA ADMIN (EIP-712) ---
 
-    // [NEW] Cập nhật hàm nội bộ để trả về startTokenId
-    function _mintEventTicketsInternal(MintVoucher calldata voucher, bytes calldata signature) internal returns (uint256) {
-        // 1. Chống MINT LẠI (Replay Attack)
+    // [NEW] Cập nhật hàm nội bộ đăng ký sự kiện (KHÔNG MINT)
+    function _registerEventInternal(MintVoucher calldata voucher, bytes calldata signature) internal {
+        // 1. Chống REPLAY ATTACK
         require(!usedNonces[voucher.nonce], "Voucher has already been used");
         usedNonces[voucher.nonce] = true;
 
@@ -103,7 +104,7 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
                 abi.encode(
                     VOUCHER_TYPEHASH,
                     voucher.eventId,
-                    voucher.quantity,
+                    voucher.quantity, // Vẫn giữ nguyên trong Hash để khớp với Backend
                     voucher.price,
                     voucher.commissionRateBps,
                     voucher.relayerGasPerTicket,
@@ -131,41 +132,24 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
             require(events[voucher.eventId].organizer == msg.sender, "Caller is not the event organizer");
         }
 
-        // 4. Mint vé cho Organizer theo định lượng voucher chỉ định
-        uint256 startTokenId = _nextTokenId();
-        _safeMint(msg.sender, voucher.quantity);
-
-        // Map vé vào đúng Event để quản lý Check-in Expiry
-        for (uint256 i = 0; i < voucher.quantity; i++) {
-            ticketToEvent[startTokenId + i] = voucher.eventId;
-        }
-
-        eventMintedCount[voucher.eventId] += voucher.quantity;
-
-        // [NEW] Emit Event để FE chộp dữ liệu
-        emit EventTicketsMinted(voucher.eventId, msg.sender, startTokenId, voucher.quantity);
-        
-        return startTokenId; // [NEW] Trả về giá trị
+        // 4. Emit Event để báo hiệu đã đăng ký thành công
+        emit EventRegistered(voucher.eventId, msg.sender);
     }
 
-    // [NEW] Cập nhật hàm đúc đơn lẻ có giá trị trả về
-    function mintEventTickets(MintVoucher calldata voucher, bytes calldata signature) external whenNotPaused returns (uint256) {
-        return _mintEventTicketsInternal(voucher, signature);
+    // [NEW] Cập nhật hàm đăng ký sự kiện đơn lẻ
+    function registerEvent(MintVoucher calldata voucher, bytes calldata signature) external whenNotPaused {
+        _registerEventInternal(voucher, signature);
     }
 
-    // [NEW] Cập nhật hàm đúc lô để trả về mảng startTokenIds
-    function batchMintEventTickets(MintVoucher[] calldata vouchers, bytes[] calldata signatures) external whenNotPaused returns (uint256[] memory) {
+    // [NEW] Cập nhật hàm đăng ký sự kiện lô (Tối ưu tiết kiệm Gas)
+    function batchRegisterEvents(MintVoucher[] calldata vouchers, bytes[] calldata signatures) external whenNotPaused {
         require(vouchers.length > 0, "Empty arrays");
         require(vouchers.length == signatures.length, "Data mismatch");
         require(vouchers.length <= 50, "Batch size exceeds limit");
 
-        uint256[] memory startTokenIds = new uint256[](vouchers.length); // [NEW] Tạo mảng lưu trữ
-
         for (uint256 i = 0; i < vouchers.length; i++) {
-            startTokenIds[i] = _mintEventTicketsInternal(vouchers[i], signatures[i]); // [NEW] Gán kết quả
+            _registerEventInternal(vouchers[i], signatures[i]);
         }
-
-        return startTokenIds; // [NEW] Trả về mảng cho caller
     }
 
     // --- TÍNH NĂNG 3: BATCH CHECK-IN (QUAN TRỌNG) ---
