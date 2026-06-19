@@ -25,6 +25,7 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
         uint256 checkinGasPerTicket;
         uint64 expiryTime;
         uint256 nonce;
+        address organizer;
     }
 
     struct Event {
@@ -37,7 +38,7 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
 
     // --- KHAI BÁO BIẾN TRẠNG THÁI ---
     bytes32 public constant VOUCHER_TYPEHASH = keccak256(
-        "MintVoucher(uint256 eventId,uint256 quantity,uint256 price,uint256 commissionRateBps,uint256 relayerGasPerTicket,uint256 checkinGasPerTicket,uint64 expiryTime,uint256 nonce)"
+        "MintVoucher(uint256 eventId,uint256 quantity,uint256 price,uint256 commissionRateBps,uint256 relayerGasPerTicket,uint256 checkinGasPerTicket,uint64 expiryTime,uint256 nonce,address organizer)"
     );
 
     IERC20 public immutable usdtToken; // Hardcode token thanh toán chống thao túng
@@ -110,7 +111,8 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
                     voucher.relayerGasPerTicket,
                     voucher.checkinGasPerTicket,
                     voucher.expiryTime,
-                    voucher.nonce
+                    voucher.nonce,
+                    voucher.organizer
                 )
             )
         );
@@ -119,7 +121,8 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
 
         // 3. Khởi tạo dữ liệu sự kiện (nếu chưa có)
         if (events[voucher.eventId].organizer == address(0)) {
-            events[voucher.eventId].organizer = msg.sender;
+            require(voucher.organizer != address(0), "Invalid organizer address in voucher");
+            events[voucher.eventId].organizer = voucher.organizer;
             events[voucher.eventId].price = voucher.price;
             events[voucher.eventId].expiryTime = voucher.expiryTime;
             events[voucher.eventId].isActive = true;
@@ -129,7 +132,7 @@ contract ShineTicket is ERC721A, AccessControl, Pausable, EIP712, ReentrancyGuar
             eventRelayerGasPerTicket[voucher.eventId] = voucher.relayerGasPerTicket;
             eventCheckinGasPerTicket[voucher.eventId] = voucher.checkinGasPerTicket;
         } else {
-            require(events[voucher.eventId].organizer == msg.sender, "Caller is not the event organizer");
+            require(events[voucher.eventId].organizer == voucher.organizer, "Voucher organizer mismatch");
         }
 
         // 4. Emit Event để báo hiệu đã đăng ký thành công
